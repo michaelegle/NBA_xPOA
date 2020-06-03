@@ -1,0 +1,158 @@
+---
+title: "First Shot at EPA?"
+author: "Michael Egle"
+date: "5/29/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(gt)
+```
+
+```{r}
+pbp19 <- read_csv('NBA-PBP-2019-2020.csv')
+```
+
+```{r}
+pbp19_fgs <- pbp19 %>%
+  filter(!is.na(ShotType)) %>%
+  select(Shooter, ShotType, ShotDist, ShotOutcome, HomeTeam, AwayTeam) %>%
+  separate(Shooter, into = c("Shooter", "Team"), sep = " - ")
+```
+
+```{r}
+pbp19_fgs <- pbp19_fgs %>%
+  mutate(ShotType = as.numeric(substr(ShotType, 1, 1)),
+         ShotOutcome = ifelse(ShotOutcome == "make", 1, 0))
+```
+
+```{r}
+train <- pbp19_fgs %>%
+  select(ShotDist, ShotOutcome)
+league_glm <- glm(ShotOutcome ~ ShotDist, data = train)
+```
+
+```{r}
+summary(league_glm)
+```
+
+```{r}
+coord_area <- expand.grid(stan_x = seq(0, 50, by = 1),
+                          stan_y = seq(0, 47, by = 1)) %>%
+  mutate(ShotDist = sqrt((stan_x - 25)^2 + (stan_y - 3.916)^2))
+```
+
+```{r}
+coord_area_fit <- coord_area %>%
+  mutate(pred = predict(league_glm, newdata = .))
+```
+
+```{r}
+coord_area_fit %>%
+  ggplot(aes(x = stan_x, y = stan_y, color = pred)) +
+  geom_point(aes(color = pred)) +
+  scale_color_continuous(low = "red", high = "green") +
+  labs(color = "Probability")
+```
+Looks nearly identical to our diagram from earlier
+
+```{r}
+coord_area_fit %>%
+  ggplot(aes(x = stan_x, y = stan_y, color = pred)) +
+  geom_contour(aes(z = pred), binwidth = .075)
+```
+
+
+Add xP and xPA to our fg dataframe
+```{r}
+pbp19_fgs <- pbp19_fgs %>%
+  mutate(xP = predict(league_glm, newdata = .) * ShotType,
+         points = ShotType * ShotOutcome,
+         xPOA = points - xP)
+```
+
+```{r}
+pbp19_fgs %>%
+  group_by(Shooter) %>%
+  summarize(team = head(Team, 1),
+            total_xPOA = sum(xPOA),
+            xPOA_shot = mean(xPOA),
+            shots = n()) %>%
+  arrange(desc(total_xPOA)) -> player_fgs
+```
+
+```{r}
+quantile(player_fgs$shots, .9)
+```
+Let's look at players with over 800 shots as that would put them in the 90th+ percentile
+
+xPOA/shot
+```{r}
+player_fgs %>%
+  filter(shots >= 800) %>%
+  arrange(desc(xPOA_shot)) %>%
+  head(10) %>%
+  gt() %>%
+  tab_header(title = "xPOA per shot for Player with 800 or More Shots",
+             subtitle = "Created by Michael Egle (@deceptivespeed_)")
+```
+
+Total xPOA
+```{r}
+player_fgs %>%
+  head(10) %>%
+  gt() %>%
+  tab_header(title = "Total xPOA in 2019-2020",
+             subtitle = "Created by Michael Egle (@deceptivespeed_)")
+```
+
+group by team
+```{r}
+pbp19_fgs %>%
+  group_by(Team) %>%
+  summarize(total_xPOA = sum(xPOA),
+            xPOA_shot = mean(xPOA)) %>%
+  arrange(desc(xPOA_shot)) -> off_xPOA
+```
+
+```{r}
+pbp19_fgs <- pbp19_fgs %>%
+  mutate(DefTeam = ifelse(Team == HomeTeam, AwayTeam, HomeTeam))
+```
+
+```{r}
+pbp19_fgs %>%
+  group_by(DefTeam) %>%
+  summarize(def_total_xPOA = sum(xPOA),
+            def_xPOA_shot = mean(xPOA)) %>%
+  arrange(def_xPOA_shot) -> def_xPOA
+```
+
+```{r}
+team_xPOA <- off_xPOA %>%
+  inner_join(def_xPOA, by = c('Team' = 'DefTeam')) %>%
+  mutate(net_xPOA_shot = xPOA_shot - def_xPOA_shot)
+```
+
+```{r}
+team_xPOA %>%
+  select(Team, net_xPOA_shot) %>%
+  arrange(desc(net_xPOA_shot)) %>%
+  head(10)
+```
+
+```{r}
+pbp19_fgs %>%
+  filter(ShotType == 2) %>%
+  group_by(Shooter, Team) %>%
+  summarize(total_xPOA = sum(xPOA),
+            xPOA_shot = mean(xPOA),
+            shots = n()) %>%
+  arrange(desc(total_xPOA))
+```
+
